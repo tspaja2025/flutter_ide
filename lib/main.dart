@@ -1,6 +1,7 @@
 import 'dart:io';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:shadcn_flutter/shadcn_flutter.dart';
 
 void main() async {
@@ -15,19 +16,23 @@ class FlutterIDE extends StatelessWidget {
     return ShadcnApp(
       debugShowCheckedModeBanner: false,
       title: "Flutter IDE",
-      home: const HomeScreen(),
+      home: const EditorScreen(),
     );
   }
 }
 
-class HomeScreen extends StatefulWidget {
-  const HomeScreen({super.key});
+class EditorScreen extends StatefulWidget {
+  const EditorScreen({super.key});
 
   @override
-  State<HomeScreen> createState() => _HomeScreenState();
+  State<StatefulWidget> createState() => _EditorScreenState();
 }
 
-class _HomeScreenState extends State<HomeScreen> {
+class _EditorScreenState extends State<EditorScreen> {
+  bool openTerminal = false;
+  late List<TabPaneData<EditorTab>> tabs;
+  int focused = 0;
+
   final GlobalKey<_EditorWindowState> _editorKey =
       GlobalKey<_EditorWindowState>();
 
@@ -303,6 +308,8 @@ class _HomeScreenState extends State<HomeScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+
     if (isLoading) {
       return Scaffold(
         child: Center(
@@ -344,95 +351,246 @@ class _HomeScreenState extends State<HomeScreen> {
     }
 
     return Scaffold(
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
+      headers: [const EditorHeader(), const Divider()],
+      footers: [const Divider(), const EditorFooter()],
+      child: ResizablePanel.horizontal(
         children: [
-          SizedBox(
-            width: 260,
-            child: Column(
-              children: [
-                Padding(
-                  padding: const EdgeInsets.all(8),
-                  child: Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    children: [
-                      const Text("EXPLORER").xSmall,
-                      IconButton.ghost(
-                        onPressed: _loadProject,
-                        density: ButtonDensity.iconDense,
-                        icon: const Icon(LucideIcons.folderOpen, size: 16),
-                      ),
-                    ],
-                  ),
-                ),
-                const Divider(),
-                TreeView(
-                  expandIcon: true,
-                  shrinkWrap: true,
-                  recursiveSelection: false,
-                  nodes: treeItems,
-                  branchLine: BranchLine.path,
-                  onSelectionChanged: TreeView.defaultSelectionHandler(
-                    treeItems,
-                    (value) {
-                      setState(() {
-                        treeItems = value;
-                      });
+          ResizablePane(
+            initialSize: 260,
+            child: Container(
+              decoration: BoxDecoration(color: theme.colorScheme.card),
+              child: Column(
+                children: [
+                  TreeView(
+                    expandIcon: true,
+                    shrinkWrap: true,
+                    recursiveSelection: false,
+                    nodes: treeItems,
+                    branchLine: BranchLine.path,
+                    onSelectionChanged: TreeView.defaultSelectionHandler(
+                      treeItems,
+                      (value) {
+                        setState(() {
+                          treeItems = value;
+                        });
+                      },
+                    ),
+                    builder: (context, node) {
+                      final fileNode = _getNodeValue(node);
+                      final isDirectory = fileNode.isDirectory;
+
+                      // Don't show expand icon for placeholder nodes
+                      final isPlaceholder = fileNode.name == "Loading...";
+                      final shouldShowExpandIcon =
+                          isDirectory && !isPlaceholder;
+
+                      return TreeItemView(
+                        onPressed: () {
+                          if (isDirectory &&
+                              !fileNode.isLoaded &&
+                              !isPlaceholder) {
+                            _expandNode(fileNode);
+                          } else if (!isDirectory && !isPlaceholder) {
+                            _openFile(fileNode.path);
+                          }
+                        },
+                        leading: isDirectory
+                            ? Icon(
+                                node.expanded
+                                    ? LucideIcons.folderOpen
+                                    : LucideIcons.folder,
+                              )
+                            : _getFileIcon(fileNode.name),
+                        onExpand: shouldShowExpandIcon
+                            ? (expanded) async {
+                                if (expanded && !fileNode.isLoaded) {
+                                  await _expandNode(fileNode);
+                                }
+                                // Call default handler to update UI
+                                TreeView.defaultItemExpandHandler(
+                                  treeItems,
+                                  node,
+                                  (value) {
+                                    setState(() {
+                                      treeItems = value;
+                                    });
+                                  },
+                                )(expanded);
+                              }
+                            : null,
+                        child: Text(fileNode.name),
+                      );
                     },
                   ),
-                  builder: (context, node) {
-                    final fileNode = _getNodeValue(node);
-                    final isDirectory = fileNode.isDirectory;
-
-                    // Don't show expand icon for placeholder nodes
-                    final isPlaceholder = fileNode.name == "Loading...";
-                    final shouldShowExpandIcon = isDirectory && !isPlaceholder;
-
-                    return TreeItemView(
-                      onPressed: () {
-                        if (isDirectory &&
-                            !fileNode.isLoaded &&
-                            !isPlaceholder) {
-                          _expandNode(fileNode);
-                        } else if (!isDirectory && !isPlaceholder) {
-                          _openFile(fileNode.path);
-                        }
-                      },
-                      leading: isDirectory
-                          ? Icon(
-                              node.expanded
-                                  ? LucideIcons.folderOpen
-                                  : LucideIcons.folder,
-                            )
-                          : _getFileIcon(fileNode.name),
-                      onExpand: shouldShowExpandIcon
-                          ? (expanded) async {
-                              if (expanded && !fileNode.isLoaded) {
-                                await _expandNode(fileNode);
-                              }
-                              // Call default handler to update UI
-                              TreeView.defaultItemExpandHandler(
-                                treeItems,
-                                node,
-                                (value) {
-                                  setState(() {
-                                    treeItems = value;
-                                  });
-                                },
-                              )(expanded);
-                            }
-                          : null,
-                      child: Text(fileNode.name),
-                    );
-                  },
-                ),
+                ],
+              ),
+            ),
+          ),
+          ResizablePane(
+            initialSize: MediaQuery.of(context).size.width - 260,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Expanded(child: EditorWindow(key: _editorKey)),
+                if (openTerminal)
+                  Container(
+                    decoration: BoxDecoration(
+                      border: Border(
+                        top: BorderSide(color: theme.colorScheme.border),
+                      ),
+                    ),
+                    height: 150,
+                    child: Column(children: [const Text("Terminal")]),
+                  ),
               ],
             ),
           ),
-          const VerticalDivider(),
-          Expanded(child: EditorWindow(key: _editorKey)),
         ],
       ),
+    );
+  }
+}
+
+class EditorHeader extends StatefulWidget {
+  const EditorHeader({super.key});
+
+  @override
+  State<EditorHeader> createState() => _EditorHeaderState();
+}
+
+class _EditorHeaderState extends State<EditorHeader> {
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return AppBar(
+      backgroundColor: theme.colorScheme.card,
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        children: [
+          const Text("Flutter IDE"),
+          SizedBox(
+            width: 260,
+            child: PrimaryButton(
+              onPressed: () {
+                showDialog(
+                  context: context,
+                  builder: (context) {
+                    return Command(
+                      builder: (context, query) async* {
+                        Map<String, List<String>> items = {
+                          "Suggestions": ["Calendar", "Search Emoji", "Launch"],
+                          "Settings": ["Profile", "Mail", "Settings"],
+                        };
+                        Map<String, Widget> icons = {
+                          "Calendar": const Icon(Icons.calendar_today),
+                          "Search Emoji": const Icon(
+                            Icons.emoji_emotions_outlined,
+                          ),
+                          "Launch": const Icon(Icons.rocket_launch_outlined),
+                          "Profile": const Icon(Icons.person_outline),
+                          "Mail": const Icon(Icons.mail_outline),
+                          "Settings": const Icon(Icons.settings_outlined),
+                        };
+                        for (final values in items.entries) {
+                          List<Widget> resultItems = [];
+                          for (final item in values.value) {
+                            if (query == null ||
+                                item.toLowerCase().contains(
+                                  query.toLowerCase(),
+                                )) {
+                              resultItems.add(
+                                CommandItem(
+                                  title: Text(item),
+                                  leading: icons[item],
+                                  onTap: () {},
+                                ),
+                              );
+                            }
+                          }
+                          if (resultItems.isNotEmpty) {
+                            // Simulate latency to showcase incremental results.
+                            await Future.delayed(const Duration(seconds: 1));
+                            yield [
+                              CommandCategory(
+                                title: Text(values.key),
+                                children: resultItems,
+                              ),
+                            ];
+                          }
+                        }
+                      },
+                    ).sized(width: 300, height: 300);
+                  },
+                );
+              },
+              size: ButtonSize.small,
+              child: const Text("Project Name"),
+            ),
+          ),
+          Builder(
+            builder: (context) {
+              return IconButton.ghost(
+                onPressed: () {
+                  showDropdown(
+                    context: context,
+                    builder: (context) {
+                      return const DropdownMenu(
+                        children: [
+                          MenuButton(child: Text("Settings")),
+                          MenuButton(child: Text("Keyboard Shortcust")),
+                        ],
+                      );
+                    },
+                  );
+                },
+                icon: const Icon(LucideIcons.settings, size: 16),
+              );
+            },
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class EditorFooter extends StatefulWidget {
+  const EditorFooter({super.key});
+
+  @override
+  State<EditorFooter> createState() => _EditorFooterState();
+}
+
+class _EditorFooterState extends State<EditorFooter> {
+  bool openTerminal = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+
+    return AppBar(
+      backgroundColor: theme.colorScheme.card,
+      trailing: [
+        const Text("Line/Column").small,
+        const Gap(4),
+        const Text("Language").small,
+        const Gap(4),
+        const SizedBox(height: 16, child: VerticalDivider()),
+        const Gap(4),
+        Tooltip(
+          tooltip: TooltipContainer(child: Text("Terminal")).call,
+          child: IconButton.ghost(
+            onPressed: () {
+              setState(() {
+                openTerminal = !openTerminal;
+              });
+            },
+            shape: ButtonShape.circle,
+            size: ButtonSize.xSmall,
+            icon: const Icon(LucideIcons.terminal, size: 12),
+          ),
+        ),
+      ],
     );
   }
 }
@@ -641,30 +799,6 @@ class _EditorWindowState extends State<EditorWindow> {
                           padding: const EdgeInsets.all(16),
                         ),
                       ),
-                      Container(
-                        width: double.infinity,
-                        height: 32,
-                        decoration: BoxDecoration(
-                          border: Border(
-                            top: BorderSide(
-                              color: Theme.of(context).colorScheme.border,
-                            ),
-                          ),
-                        ),
-                        child: Row(
-                          mainAxisAlignment: MainAxisAlignment.end,
-                          children: [
-                            const Text("1:1"),
-                            const Gap(8),
-                            const Text("Dart"),
-                            const Gap(8),
-                            IconButton.ghost(
-                              onPressed: () {},
-                              icon: const Icon(LucideIcons.terminal, size: 16),
-                            ),
-                          ],
-                        ),
-                      ),
                     ],
                   ),
           ),
@@ -717,6 +851,234 @@ class FileSystemNode {
   });
 }
 
+// class TabPaneData<T> {
+//   final T data;
+
+//   TabPaneData(this.data);
+// }
+
+final projectProvider = NotifierProvider<ProjectNotifier, ProjectState>(
+  ProjectNotifier.new,
+);
+
+final editorProvider = NotifierProvider<EditorNotifier, EditorState>(
+  EditorNotifier.new,
+);
+
+final uiProvider = NotifierProvider<UINotifier, UIState>(UINotifier.new);
+
+final loadingProvider = NotifierProvider<LoadingNotifier, bool>(
+  LoadingNotifier.new,
+);
+
+final errorProvider = NotifierProvider<ErrorNotifier, String?>(
+  ErrorNotifier.new,
+);
+
+class LoadingNotifier extends Notifier<bool> {
+  @override
+  bool build() => false;
+
+  void set(bool value) => state = value;
+}
+
+class ErrorNotifier extends Notifier<String?> {
+  @override
+  String? build() => null;
+
+  void set(String? value) => state = value;
+}
+
+class ProjectState {
+  final List<TreeNode<FileSystemNode>> treeItems;
+  final Directory? projectDirectory;
+  final String? projectName;
+
+  const ProjectState({
+    this.treeItems = const [],
+    this.projectDirectory,
+    this.projectName,
+  });
+
+  ProjectState copyWith({
+    List<TreeNode<FileSystemNode>>? treeItems,
+    Directory? projectDirectory,
+    String? projectName,
+  }) {
+    return ProjectState(
+      treeItems: treeItems ?? this.treeItems,
+      projectDirectory: projectDirectory ?? this.projectDirectory,
+      projectName: projectName ?? this.projectName,
+    );
+  }
+}
+
+class ProjectNotifier extends Notifier<ProjectState> {
+  @override
+  ProjectState build() {
+    // TODO: implement build
+    throw UnimplementedError();
+  }
+
+  void setProject(
+    Directory directory,
+    String name,
+    List<TreeNode<FileSystemNode>> treeItems,
+  ) {
+    state = state.copyWith(
+      projectDirectory: directory,
+      projectName: name,
+      treeItems: treeItems,
+    );
+  }
+
+  void updateTreeItems(List<TreeNode<FileSystemNode>> treeItems) {
+    state = state.copyWith(treeItems: treeItems);
+  }
+
+  void clearProject() {
+    state = const ProjectState();
+  }
+}
+
+class EditorState {
+  final List<TabPaneData<EditorTab>> tabs;
+  final int focusedIndex;
+
+  const EditorState({this.tabs = const [], this.focusedIndex = 0});
+
+  EditorState copyWith({
+    List<TabPaneData<EditorTab>>? tabs,
+    int? focusedIndex,
+  }) {
+    return EditorState(
+      tabs: tabs ?? this.tabs,
+      focusedIndex: focusedIndex ?? this.focusedIndex,
+    );
+  }
+}
+
+class EditorNotifier extends Notifier<EditorState> {
+  @override
+  EditorState build() {
+    // TODO: implement build
+    throw UnimplementedError();
+  }
+
+  void addTab(EditorTab tab) {
+    final newTabs = List<TabPaneData<EditorTab>>.from(state.tabs);
+
+    // Replace welcome tab if it's the only one
+    if (newTabs.length == 1 && newTabs.first.data.path == "__welcome__") {
+      newTabs[0] = TabPaneData(tab);
+      state = state.copyWith(tabs: newTabs, focusedIndex: 0);
+    } else {
+      newTabs.add(TabPaneData(tab));
+      state = state.copyWith(tabs: newTabs, focusedIndex: newTabs.length - 1);
+    }
+  }
+
+  void focusTab(int index) {
+    if (index < state.tabs.length) {
+      state = state.copyWith(focusedIndex: index);
+    }
+  }
+
+  void removeTab(int index) {
+    final newTabs = List<TabPaneData<EditorTab>>.from(state.tabs);
+    newTabs.removeAt(index);
+
+    int newFocusedIndex = state.focusedIndex;
+    if (newFocusedIndex >= newTabs.length && newTabs.isNotEmpty) {
+      newFocusedIndex = newTabs.length - 1;
+    } else if (newTabs.isEmpty) {
+      newFocusedIndex = -1;
+    }
+
+    state = state.copyWith(tabs: newTabs, focusedIndex: newFocusedIndex);
+  }
+
+  void updateTabContent(int index, String newContent) {
+    if (index >= state.tabs.length) return;
+
+    final currentTab = state.tabs[index];
+    final isModified = currentTab.data.content != newContent;
+
+    final updatedTab = TabPaneData(
+      currentTab.data.copyWith(content: newContent, isModified: isModified),
+    );
+
+    final newTabs = List<TabPaneData<EditorTab>>.from(state.tabs);
+    newTabs[index] = updatedTab;
+
+    state = state.copyWith(tabs: newTabs);
+  }
+
+  void saveCurrentFile(String newContent) async {
+    final currentTab = getCurrentTab();
+    if (currentTab == null || currentTab.path == "__welcome__") return;
+
+    try {
+      final file = File(currentTab.path);
+      await file.writeAsString(newContent);
+
+      // Update tab content and reset modified flag
+      final updatedTab = TabPaneData(
+        currentTab.copyWith(content: newContent, isModified: false),
+      );
+
+      final newTabs = List<TabPaneData<EditorTab>>.from(state.tabs);
+      newTabs[state.focusedIndex] = updatedTab;
+
+      state = state.copyWith(tabs: newTabs);
+    } catch (e) {
+      rethrow;
+    }
+  }
+
+  EditorTab? getCurrentTab() {
+    if (state.focusedIndex >= 0 && state.focusedIndex < state.tabs.length) {
+      return state.tabs[state.focusedIndex].data;
+    }
+    return null;
+  }
+
+  int findOpenTabIndex(String path) {
+    for (int i = 0; i < state.tabs.length; i++) {
+      if (state.tabs[i].data.path == path) {
+        return i;
+      }
+    }
+    return -1;
+  }
+}
+
+class UIState {
+  final bool openTerminal;
+
+  const UIState({this.openTerminal = false});
+
+  UIState copyWith({bool? openTerminal}) {
+    return UIState(openTerminal: openTerminal ?? this.openTerminal);
+  }
+}
+
+class UINotifier extends Notifier<UIState> {
+  @override
+  UIState build() {
+    // TODO: implement build
+    throw UnimplementedError();
+  }
+
+  void toggleTerminal() {
+    state = state.copyWith(openTerminal: !state.openTerminal);
+  }
+
+  void setTerminal(bool open) {
+    state = state.copyWith(openTerminal: open);
+  }
+}
+
 // 1. Adopt Riverpod for state management
 // 2. Separate business logic from UI
 // 3. Improved error handling
@@ -729,465 +1091,3 @@ class FileSystemNode {
 // 10. Multi-file operations
 // 11. Git Integration
 // 12. Testing
-
-// class EditorScreen extends StatefulWidget {
-//   const EditorScreen({super.key});
-
-//   @override
-//   State<StatefulWidget> createState() => _EditorScreenState();
-// }
-
-// class _EditorScreenState extends State<EditorScreen> {
-//   bool openTerminal = false;
-
-//   @override
-//   Widget build(BuildContext context) {
-//     final theme = Theme.of(context);
-//     return Scaffold(
-//       headers: [const EditorHeader(), const Divider()],
-//       footers: [const Divider(), const EditorFooter()],
-//       child: ResizablePanel.horizontal(
-//         children: [
-//           ResizablePane(
-//             initialSize: 260,
-//             child: Container(
-//               decoration: BoxDecoration(color: theme.colorScheme.card),
-//               child: Column(children: [const EditorTreeView()]),
-//             ),
-//           ),
-//           ResizablePane(
-//             initialSize: MediaQuery.of(context).size.width - 260,
-//             child: Column(
-//               crossAxisAlignment: CrossAxisAlignment.stretch,
-//               mainAxisAlignment: MainAxisAlignment.spaceBetween,
-//               children: [
-//                 const EditorView(),
-//                 if (openTerminal) const TerminalView(),
-//               ],
-//             ),
-//           ),
-//         ],
-//       ),
-//     );
-//   }
-// }
-
-// class TerminalView extends StatelessWidget {
-//   const TerminalView({super.key});
-
-//   @override
-//   Widget build(BuildContext context) {
-//     final theme = Theme.of(context);
-//     return Container(
-//       decoration: BoxDecoration(
-//         border: Border(top: BorderSide(color: theme.colorScheme.border)),
-//       ),
-//       height: 150,
-//       child: Column(children: [const Text("Terminal")]),
-//     );
-//   }
-// }
-
-// class EditorView extends StatefulWidget {
-//   const EditorView({super.key});
-
-//   @override
-//   State<EditorView> createState() => _EditorViewState();
-// }
-
-// class _EditorViewState extends State<EditorView> {
-//   late List<TabPaneData<EditorTab>> tabs;
-//   int focused = 0;
-//   final TextEditingController _textController = TextEditingController();
-
-//   void _onTextChanged() {
-//     if (focused >= tabs.length) return;
-
-//     final currentContent = tabs[focused].data.content;
-//     final newContent = _textController.text;
-
-//     if (currentContent != newContent) {
-//       setState(() {
-//         tabs[focused] = TabPaneData(
-//           tabs[focused].data.copyWith(content: newContent, isModified: true),
-//         );
-//       });
-//     }
-//   }
-
-//   @override
-//   void initState() {
-//     super.initState();
-
-//     tabs = [
-//       TabPaneData(
-//         EditorTab(
-//           title: "Welcome",
-//           path: "__welcome__",
-//           content: "Welcome to Flutter IDE\n\nOpen a folder to get started.",
-//         ),
-//       ),
-//     ];
-
-//     _textController.text = tabs.first.data.content;
-
-//     _textController.addListener(_onTextChanged);
-//   }
-
-//   @override
-//   Widget build(BuildContext context) {
-//     return TabPane<EditorTab>(
-//       // children: tabs.map((e) => _buildTabItem(e)).toList(),
-//       // Provide the items and how to render each tab header.
-//       items: tabs,
-//       itemBuilder: (context, item, index) {
-//         final data = item.data;
-
-//         return TabItem(
-//           child: ConstrainedBox(
-//             constraints: const BoxConstraints(maxWidth: 200),
-//             child: Label(
-//               leading: data.isModified
-//                   ? const Icon(LucideIcons.circle, size: 8)
-//                   : null,
-//               trailing: IconButton.ghost(
-//                 shape: ButtonShape.circle,
-//                 size: ButtonSize.xSmall,
-//                 icon: const Icon(LucideIcons.x),
-//                 onPressed: () {
-//                   setState(() {
-//                     tabs.removeAt(index);
-//                     if (focused >= tabs.length && tabs.isNotEmpty) {
-//                       focused = tabs.length - 1;
-//                     } else if (tabs.isEmpty) {
-//                       _textController.clear();
-//                     } else {
-//                       _textController.text = tabs[focused].data.content;
-//                     }
-//                   });
-//                 },
-//               ),
-//               child: Text(data.title),
-//             ),
-//           ),
-//         );
-//       },
-//       // The currently focused tab index.
-//       focused: focused,
-//       onFocused: (value) {
-//         setState(() {
-//           focused = value;
-//         });
-//       },
-//       // Allow reordering via drag-and-drop; update the list with the new order.
-//       onSort: (value) {
-//         setState(() {
-//           tabs = value;
-//         });
-//       },
-//       trailing: [
-//         IconButton.ghost(
-//           icon: const Icon(LucideIcons.save),
-//           size: ButtonSize.small,
-//           density: ButtonDensity.iconDense,
-//           onPressed: () {},
-//         ),
-//       ],
-//       // The content area; you can render based on the focused index.
-//       child: SizedBox(
-//         width: 200,
-//         height: MediaQuery.of(context).size.height - 135,
-//         child: TextField(
-//           controller: _textController,
-//           readOnly: tabs[focused].data.path == "__welcome__",
-//           expands: true,
-//           minLines: null,
-//           maxLines: null,
-//           padding: const EdgeInsets.all(16),
-//         ),
-//       ),
-//     );
-//   }
-// }
-
-// class EditorTreeView extends StatefulWidget {
-//   const EditorTreeView({super.key});
-
-//   @override
-//   State<EditorTreeView> createState() => _EditorTreeViewState();
-// }
-
-// class _EditorTreeViewState extends State<EditorTreeView> {
-//   List<TreeNode<String>> treeItems = [
-//     TreeItem(
-//       data: "Apple",
-//       expanded: true,
-//       children: [
-//         TreeItem(
-//           data: "Red Apple",
-//           children: [
-//             TreeItem(data: "Red Apple 1"),
-//             TreeItem(data: "Red Apple 2"),
-//           ],
-//         ),
-//         TreeItem(data: "Green Apple"),
-//       ],
-//     ),
-//     TreeItem(
-//       data: "Banana",
-//       children: [
-//         TreeItem(data: "Yellow Banana"),
-//         TreeItem(
-//           data: "Green Banana",
-//           children: [
-//             TreeItem(data: "Green Banana 1"),
-//             TreeItem(data: "Green Banana 2"),
-//             TreeItem(data: "Green Banana 3"),
-//           ],
-//         ),
-//       ],
-//     ),
-//     TreeItem(
-//       data: "Cherry",
-//       children: [
-//         TreeItem(data: "Red Cherry"),
-//         TreeItem(data: "Green Cherry"),
-//       ],
-//     ),
-//     TreeItem(data: "Date"),
-//     // Tree Root acts as a parent node with no data,
-//     // it will flatten the children into the parent node
-//     TreeRoot(
-//       children: [
-//         TreeItem(
-//           data: "Elderberry",
-//           children: [
-//             TreeItem(data: "Black Elderberry"),
-//             TreeItem(data: "Red Elderberry"),
-//           ],
-//         ),
-//         TreeItem(
-//           data: "Fig",
-//           children: [
-//             TreeItem(data: "Green Fig"),
-//             TreeItem(data: "Purple Fig"),
-//           ],
-//         ),
-//       ],
-//     ),
-//   ];
-
-//   @override
-//   Widget build(BuildContext context) {
-//     return TreeView(
-//       expandIcon: true,
-//       shrinkWrap: true,
-//       recursiveSelection: false,
-//       nodes: treeItems,
-//       branchLine: BranchLine.path,
-//       onSelectionChanged: TreeView.defaultSelectionHandler(treeItems, (value) {
-//         setState(() {
-//           treeItems = value;
-//         });
-//       }),
-//       builder: (context, node) {
-//         return TreeItemView(
-//           onPressed: () {},
-//           trailing: node.leaf
-//               ? Container(
-//                   width: 16,
-//                   height: 16,
-//                   alignment: Alignment.center,
-//                   child: const CircularProgressIndicator(),
-//                 )
-//               : null,
-//           leading: node.leaf
-//               ? const Icon(BootstrapIcons.fileImage)
-//               : Icon(
-//                   node.expanded
-//                       ? BootstrapIcons.folder2Open
-//                       : BootstrapIcons.folder2,
-//                 ),
-//           // Expand/collapse handling; updates treeItems with new expanded state.
-//           onExpand: TreeView.defaultItemExpandHandler(treeItems, node, (value) {
-//             setState(() {
-//               treeItems = value;
-//             });
-//           }),
-//           child: Text(node.data),
-//         );
-//       },
-//     );
-//   }
-// }
-
-// class EditorHeader extends StatefulWidget {
-//   const EditorHeader({super.key});
-
-//   @override
-//   State<EditorHeader> createState() => _EditorHeaderState();
-// }
-
-// class _EditorHeaderState extends State<EditorHeader> {
-//   @override
-//   Widget build(BuildContext context) {
-//     final theme = Theme.of(context);
-//     return AppBar(
-//       backgroundColor: theme.colorScheme.card,
-//       child: Row(
-//         mainAxisAlignment: MainAxisAlignment.spaceBetween,
-//         children: [
-//           const Text("Flutter IDE"),
-//           SizedBox(
-//             width: 260,
-//             child: PrimaryButton(
-//               onPressed: () {
-//                 showDialog(
-//                   context: context,
-//                   builder: (context) {
-//                     return Command(
-//                       builder: (context, query) async* {
-//                         Map<String, List<String>> items = {
-//                           "Suggestions": ["Calendar", "Search Emoji", "Launch"],
-//                           "Settings": ["Profile", "Mail", "Settings"],
-//                         };
-//                         Map<String, Widget> icons = {
-//                           "Calendar": const Icon(Icons.calendar_today),
-//                           "Search Emoji": const Icon(
-//                             Icons.emoji_emotions_outlined,
-//                           ),
-//                           "Launch": const Icon(Icons.rocket_launch_outlined),
-//                           "Profile": const Icon(Icons.person_outline),
-//                           "Mail": const Icon(Icons.mail_outline),
-//                           "Settings": const Icon(Icons.settings_outlined),
-//                         };
-//                         for (final values in items.entries) {
-//                           List<Widget> resultItems = [];
-//                           for (final item in values.value) {
-//                             if (query == null ||
-//                                 item.toLowerCase().contains(
-//                                   query.toLowerCase(),
-//                                 )) {
-//                               resultItems.add(
-//                                 CommandItem(
-//                                   title: Text(item),
-//                                   leading: icons[item],
-//                                   onTap: () {},
-//                                 ),
-//                               );
-//                             }
-//                           }
-//                           if (resultItems.isNotEmpty) {
-//                             // Simulate latency to showcase incremental results.
-//                             await Future.delayed(const Duration(seconds: 1));
-//                             yield [
-//                               CommandCategory(
-//                                 title: Text(values.key),
-//                                 children: resultItems,
-//                               ),
-//                             ];
-//                           }
-//                         }
-//                       },
-//                     ).sized(width: 300, height: 300);
-//                   },
-//                 );
-//               },
-//               size: ButtonSize.small,
-//               child: const Text("Project Name"),
-//             ),
-//           ),
-//           Builder(
-//             builder: (context) {
-//               return IconButton.ghost(
-//                 onPressed: () {
-//                   showDropdown(
-//                     context: context,
-//                     builder: (context) {
-//                       return const DropdownMenu(
-//                         children: [
-//                           MenuButton(child: Text("Settings")),
-//                           MenuButton(child: Text("Keyboard Shortcust")),
-//                         ],
-//                       );
-//                     },
-//                   );
-//                 },
-//                 icon: const Icon(LucideIcons.settings, size: 16),
-//               );
-//             },
-//           ),
-//         ],
-//       ),
-//     );
-//   }
-// }
-
-// class EditorFooter extends StatefulWidget {
-//   const EditorFooter({super.key});
-
-//   @override
-//   State<EditorFooter> createState() => _EditorFooterState();
-// }
-
-// class _EditorFooterState extends State<EditorFooter> {
-//   bool openTerminal = false;
-
-//   @override
-//   Widget build(BuildContext context) {
-//     final theme = Theme.of(context);
-
-//     return AppBar(
-//       backgroundColor: theme.colorScheme.card,
-//       trailing: [
-//         const Text("Line/Column").small,
-//         const Gap(4),
-//         const Text("Language").small,
-//         const Gap(4),
-//         const SizedBox(height: 16, child: VerticalDivider()),
-//         const Gap(4),
-//         Tooltip(
-//           tooltip: TooltipContainer(child: Text("Terminal")).call,
-//           child: IconButton.ghost(
-//             onPressed: () {
-//               setState(() {
-//                 openTerminal = !openTerminal;
-//               });
-//             },
-//             shape: ButtonShape.circle,
-//             size: ButtonSize.xSmall,
-//             icon: const Icon(LucideIcons.terminal, size: 12),
-//           ),
-//         ),
-//       ],
-//     );
-//   }
-// }
-
-// class EditorTab {
-//   final String title;
-//   final String path;
-//   final String content;
-//   final bool isModified;
-
-//   EditorTab({
-//     required this.title,
-//     required this.path,
-//     required this.content,
-//     this.isModified = false,
-//   });
-
-//   EditorTab copyWith({
-//     String? title,
-//     String? path,
-//     String? content,
-//     bool? isModified,
-//   }) {
-//     return EditorTab(
-//       title: title ?? this.title,
-//       path: path ?? this.path,
-//       content: content ?? this.content,
-//       isModified: isModified ?? this.isModified,
-//     );
-//   }
-// }
