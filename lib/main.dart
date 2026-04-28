@@ -2,10 +2,13 @@ import 'dart:io';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:riverpod_annotation/riverpod_annotation.dart';
 import 'package:shadcn_flutter/shadcn_flutter.dart';
 
+// part "main.g.dart";
+
 void main() async {
-  runApp(const FlutterIDE());
+  runApp(const ProviderScope(child: FlutterIDE()));
 }
 
 class FlutterIDE extends StatelessWidget {
@@ -351,8 +354,132 @@ class _EditorScreenState extends State<EditorScreen> {
     }
 
     return Scaffold(
-      headers: [const EditorHeader(), const Divider()],
-      footers: [const Divider(), const EditorFooter()],
+      headers: [
+        AppBar(
+          backgroundColor: theme.colorScheme.card,
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              const Text("Flutter IDE"),
+              SizedBox(
+                width: 260,
+                child: OutlineButton(
+                  onPressed: () {
+                    showDialog(
+                      context: context,
+                      builder: (context) {
+                        return Command(
+                          builder: (context, query) async* {
+                            Map<String, List<String>> items = {
+                              "Suggestions": [
+                                "Calendar",
+                                "Search Emoji",
+                                "Launch",
+                              ],
+                              "Settings": ["Profile", "Mail", "Settings"],
+                            };
+                            Map<String, Widget> icons = {
+                              "Calendar": const Icon(Icons.calendar_today),
+                              "Search Emoji": const Icon(
+                                Icons.emoji_emotions_outlined,
+                              ),
+                              "Launch": const Icon(
+                                Icons.rocket_launch_outlined,
+                              ),
+                              "Profile": const Icon(Icons.person_outline),
+                              "Mail": const Icon(Icons.mail_outline),
+                              "Settings": const Icon(Icons.settings_outlined),
+                            };
+                            for (final values in items.entries) {
+                              List<Widget> resultItems = [];
+                              for (final item in values.value) {
+                                if (query == null ||
+                                    item.toLowerCase().contains(
+                                      query.toLowerCase(),
+                                    )) {
+                                  resultItems.add(
+                                    CommandItem(
+                                      title: Text(item),
+                                      leading: icons[item],
+                                      onTap: () {},
+                                    ),
+                                  );
+                                }
+                              }
+                              if (resultItems.isNotEmpty) {
+                                // Simulate latency to showcase incremental results.
+                                await Future.delayed(
+                                  const Duration(seconds: 1),
+                                );
+                                yield [
+                                  CommandCategory(
+                                    title: Text(values.key),
+                                    children: resultItems,
+                                  ),
+                                ];
+                              }
+                            }
+                          },
+                        ).sized(width: 300, height: 300);
+                      },
+                    );
+                  },
+                  size: ButtonSize.small,
+                  child: const Text("Project Name"),
+                ),
+              ),
+              Builder(
+                builder: (context) {
+                  return IconButton.ghost(
+                    onPressed: () {
+                      showDropdown(
+                        context: context,
+                        builder: (context) {
+                          return const DropdownMenu(
+                            children: [
+                              MenuButton(child: Text("Settings")),
+                              MenuButton(child: Text("Keymap")),
+                            ],
+                          );
+                        },
+                      );
+                    },
+                    icon: const Icon(LucideIcons.settings, size: 16),
+                  );
+                },
+              ),
+            ],
+          ),
+        ),
+        const Divider(),
+      ],
+      footers: [
+        const Divider(),
+        AppBar(
+          backgroundColor: theme.colorScheme.card,
+          trailing: [
+            const Text("Line/Column").small,
+            const Gap(4),
+            const Text("Language").small,
+            const Gap(4),
+            const SizedBox(height: 16, child: VerticalDivider()),
+            const Gap(4),
+            Tooltip(
+              tooltip: TooltipContainer(child: Text("Terminal")).call,
+              child: IconButton.ghost(
+                onPressed: () {
+                  setState(() {
+                    openTerminal = !openTerminal;
+                  });
+                },
+                shape: ButtonShape.circle,
+                size: ButtonSize.xSmall,
+                icon: const Icon(LucideIcons.terminal, size: 12),
+              ),
+            ),
+          ],
+        ),
+      ],
       child: ResizablePanel.horizontal(
         children: [
           ResizablePane(
@@ -448,149 +575,6 @@ class _EditorScreenState extends State<EditorScreen> {
           ),
         ],
       ),
-    );
-  }
-}
-
-class EditorHeader extends StatefulWidget {
-  const EditorHeader({super.key});
-
-  @override
-  State<EditorHeader> createState() => _EditorHeaderState();
-}
-
-class _EditorHeaderState extends State<EditorHeader> {
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    return AppBar(
-      backgroundColor: theme.colorScheme.card,
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-        children: [
-          const Text("Flutter IDE"),
-          SizedBox(
-            width: 260,
-            child: PrimaryButton(
-              onPressed: () {
-                showDialog(
-                  context: context,
-                  builder: (context) {
-                    return Command(
-                      builder: (context, query) async* {
-                        Map<String, List<String>> items = {
-                          "Suggestions": ["Calendar", "Search Emoji", "Launch"],
-                          "Settings": ["Profile", "Mail", "Settings"],
-                        };
-                        Map<String, Widget> icons = {
-                          "Calendar": const Icon(Icons.calendar_today),
-                          "Search Emoji": const Icon(
-                            Icons.emoji_emotions_outlined,
-                          ),
-                          "Launch": const Icon(Icons.rocket_launch_outlined),
-                          "Profile": const Icon(Icons.person_outline),
-                          "Mail": const Icon(Icons.mail_outline),
-                          "Settings": const Icon(Icons.settings_outlined),
-                        };
-                        for (final values in items.entries) {
-                          List<Widget> resultItems = [];
-                          for (final item in values.value) {
-                            if (query == null ||
-                                item.toLowerCase().contains(
-                                  query.toLowerCase(),
-                                )) {
-                              resultItems.add(
-                                CommandItem(
-                                  title: Text(item),
-                                  leading: icons[item],
-                                  onTap: () {},
-                                ),
-                              );
-                            }
-                          }
-                          if (resultItems.isNotEmpty) {
-                            // Simulate latency to showcase incremental results.
-                            await Future.delayed(const Duration(seconds: 1));
-                            yield [
-                              CommandCategory(
-                                title: Text(values.key),
-                                children: resultItems,
-                              ),
-                            ];
-                          }
-                        }
-                      },
-                    ).sized(width: 300, height: 300);
-                  },
-                );
-              },
-              size: ButtonSize.small,
-              child: const Text("Project Name"),
-            ),
-          ),
-          Builder(
-            builder: (context) {
-              return IconButton.ghost(
-                onPressed: () {
-                  showDropdown(
-                    context: context,
-                    builder: (context) {
-                      return const DropdownMenu(
-                        children: [
-                          MenuButton(child: Text("Settings")),
-                          MenuButton(child: Text("Keyboard Shortcust")),
-                        ],
-                      );
-                    },
-                  );
-                },
-                icon: const Icon(LucideIcons.settings, size: 16),
-              );
-            },
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class EditorFooter extends StatefulWidget {
-  const EditorFooter({super.key});
-
-  @override
-  State<EditorFooter> createState() => _EditorFooterState();
-}
-
-class _EditorFooterState extends State<EditorFooter> {
-  bool openTerminal = false;
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-
-    return AppBar(
-      backgroundColor: theme.colorScheme.card,
-      trailing: [
-        const Text("Line/Column").small,
-        const Gap(4),
-        const Text("Language").small,
-        const Gap(4),
-        const SizedBox(height: 16, child: VerticalDivider()),
-        const Gap(4),
-        Tooltip(
-          tooltip: TooltipContainer(child: Text("Terminal")).call,
-          child: IconButton.ghost(
-            onPressed: () {
-              setState(() {
-                openTerminal = !openTerminal;
-              });
-            },
-            shape: ButtonShape.circle,
-            size: ButtonSize.xSmall,
-            icon: const Icon(LucideIcons.terminal, size: 12),
-          ),
-        ),
-      ],
     );
   }
 }
@@ -851,233 +835,115 @@ class FileSystemNode {
   });
 }
 
-// class TabPaneData<T> {
-//   final T data;
+// class Editor {
+//   final String projectName;
+//   final String projectPath;
+//   final String projectContent;
+//   final bool isDirectory;
+//   final bool isModified;
+//   final bool isLoaded;
+//   final bool isLoading;
+//   List<FileSystemNode>? children;
 
-//   TabPaneData(this.data);
+//   Editor({
+//     required this.projectName,
+//     required this.projectPath,
+//     required this.projectContent,
+//     required this.isDirectory,
+//     required this.isModified,
+//     required this.isLoaded,
+//     required this.isLoading,
+//   });
+
+//   Editor copyWith({
+//     String? projectName,
+//     String? projectPath,
+//     String? projectContent,
+//     bool? isDirectory,
+//     bool? isModified,
+//     bool? isLoaded,
+//     bool? isLoading,
+//   }) {
+//     return Editor(
+//       projectName: projectName ?? this.projectName,
+//       projectPath: projectPath ?? this.projectPath,
+//       projectContent: projectContent ?? this.projectContent,
+//       isDirectory: isDirectory ?? this.isDirectory,
+//       isModified: isModified ?? this.isModified,
+//       isLoaded: isLoaded ?? this.isLoaded,
+//       isLoading: isLoading ?? this.isLoading,
+//     );
+//   }
 // }
 
-final projectProvider = NotifierProvider<ProjectNotifier, ProjectState>(
-  ProjectNotifier.new,
-);
+// @riverpod
+// class EditorManager extends _$EditorManager {
+//   @override
+//   Editor build() {
+//     // TODO: implement build
+//     throw UnimplementedError();
+//   }
 
-final editorProvider = NotifierProvider<EditorNotifier, EditorState>(
-  EditorNotifier.new,
-);
+//   Future<Directory?> pickProjectDirectory() async {
+//     // TODO: implement pickProjectDirectory
+//   }
 
-final uiProvider = NotifierProvider<UINotifier, UIState>(UINotifier.new);
+//   Future<void> loadProject() async {
+//     // TODO: implement loadProject
+//   }
 
-final loadingProvider = NotifierProvider<LoadingNotifier, bool>(
-  LoadingNotifier.new,
-);
+//   Future<List<Editor>> loadDirectoryChildren(Directory directory) async {
+//     // TODO: implement loadDirectoryChildren
+//   }
 
-final errorProvider = NotifierProvider<ErrorNotifier, String?>(
-  ErrorNotifier.new,
-);
+//   Future<void> expandNode(Editor node) async {
+//     // TODO: implement expandNode
+//   }
 
-class LoadingNotifier extends Notifier<bool> {
-  @override
-  bool build() => false;
+//   Future<String> readFileContent(String filePath) async {
+//     // TODO: implement readFileContent
+//   }
 
-  void set(bool value) => state = value;
-}
+//   Future<void> openFile(String path) async {
+//     // TODO: implement openFile
+//   }
 
-class ErrorNotifier extends Notifier<String?> {
-  @override
-  String? build() => null;
+//   Future<void> saveCurrentFile() async {
+//     // TODO: implement saveCurrentFile
+//   }
 
-  void set(String? value) => state = value;
-}
+//   TreeNode<Editor>? findNode(List<TreeNode<Editor>> nodes, String path) {
+//     // TODO: implement findNode
+//   }
 
-class ProjectState {
-  final List<TreeNode<FileSystemNode>> treeItems;
-  final Directory? projectDirectory;
-  final String? projectName;
+//   TreeNode<Editor> convertToTreeNode(Editor node) {
+//     // TODO: implement convertToTreeNode
+//   }
 
-  const ProjectState({
-    this.treeItems = const [],
-    this.projectDirectory,
-    this.projectName,
-  });
+//   Editor getNodeValue(TreeNode<Editor> node) {
+//     // TODO: implement getNodeValue
+//   }
 
-  ProjectState copyWith({
-    List<TreeNode<FileSystemNode>>? treeItems,
-    Directory? projectDirectory,
-    String? projectName,
-  }) {
-    return ProjectState(
-      treeItems: treeItems ?? this.treeItems,
-      projectDirectory: projectDirectory ?? this.projectDirectory,
-      projectName: projectName ?? this.projectName,
-    );
-  }
-}
+//   Icon getFileIcon(String fileName) {
+//     // TODO: implement getFileIcon
+//   }
 
-class ProjectNotifier extends Notifier<ProjectState> {
-  @override
-  ProjectState build() {
-    // TODO: implement build
-    throw UnimplementedError();
-  }
+//   int findOpenTabIndex(String path) {
+//     // TODO: implement findOpenTabIndex
+//   }
 
-  void setProject(
-    Directory directory,
-    String name,
-    List<TreeNode<FileSystemNode>> treeItems,
-  ) {
-    state = state.copyWith(
-      projectDirectory: directory,
-      projectName: name,
-      treeItems: treeItems,
-    );
-  }
+//   void addTab(EditorTab tab) {
+//     // TODO: implement addTab
+//   }
 
-  void updateTreeItems(List<TreeNode<FileSystemNode>> treeItems) {
-    state = state.copyWith(treeItems: treeItems);
-  }
+//   void focusTab(int index) {
+//     // TODO: implement focusTab
+//   }
 
-  void clearProject() {
-    state = const ProjectState();
-  }
-}
-
-class EditorState {
-  final List<TabPaneData<EditorTab>> tabs;
-  final int focusedIndex;
-
-  const EditorState({this.tabs = const [], this.focusedIndex = 0});
-
-  EditorState copyWith({
-    List<TabPaneData<EditorTab>>? tabs,
-    int? focusedIndex,
-  }) {
-    return EditorState(
-      tabs: tabs ?? this.tabs,
-      focusedIndex: focusedIndex ?? this.focusedIndex,
-    );
-  }
-}
-
-class EditorNotifier extends Notifier<EditorState> {
-  @override
-  EditorState build() {
-    // TODO: implement build
-    throw UnimplementedError();
-  }
-
-  void addTab(EditorTab tab) {
-    final newTabs = List<TabPaneData<EditorTab>>.from(state.tabs);
-
-    // Replace welcome tab if it's the only one
-    if (newTabs.length == 1 && newTabs.first.data.path == "__welcome__") {
-      newTabs[0] = TabPaneData(tab);
-      state = state.copyWith(tabs: newTabs, focusedIndex: 0);
-    } else {
-      newTabs.add(TabPaneData(tab));
-      state = state.copyWith(tabs: newTabs, focusedIndex: newTabs.length - 1);
-    }
-  }
-
-  void focusTab(int index) {
-    if (index < state.tabs.length) {
-      state = state.copyWith(focusedIndex: index);
-    }
-  }
-
-  void removeTab(int index) {
-    final newTabs = List<TabPaneData<EditorTab>>.from(state.tabs);
-    newTabs.removeAt(index);
-
-    int newFocusedIndex = state.focusedIndex;
-    if (newFocusedIndex >= newTabs.length && newTabs.isNotEmpty) {
-      newFocusedIndex = newTabs.length - 1;
-    } else if (newTabs.isEmpty) {
-      newFocusedIndex = -1;
-    }
-
-    state = state.copyWith(tabs: newTabs, focusedIndex: newFocusedIndex);
-  }
-
-  void updateTabContent(int index, String newContent) {
-    if (index >= state.tabs.length) return;
-
-    final currentTab = state.tabs[index];
-    final isModified = currentTab.data.content != newContent;
-
-    final updatedTab = TabPaneData(
-      currentTab.data.copyWith(content: newContent, isModified: isModified),
-    );
-
-    final newTabs = List<TabPaneData<EditorTab>>.from(state.tabs);
-    newTabs[index] = updatedTab;
-
-    state = state.copyWith(tabs: newTabs);
-  }
-
-  void saveCurrentFile(String newContent) async {
-    final currentTab = getCurrentTab();
-    if (currentTab == null || currentTab.path == "__welcome__") return;
-
-    try {
-      final file = File(currentTab.path);
-      await file.writeAsString(newContent);
-
-      // Update tab content and reset modified flag
-      final updatedTab = TabPaneData(
-        currentTab.copyWith(content: newContent, isModified: false),
-      );
-
-      final newTabs = List<TabPaneData<EditorTab>>.from(state.tabs);
-      newTabs[state.focusedIndex] = updatedTab;
-
-      state = state.copyWith(tabs: newTabs);
-    } catch (e) {
-      rethrow;
-    }
-  }
-
-  EditorTab? getCurrentTab() {
-    if (state.focusedIndex >= 0 && state.focusedIndex < state.tabs.length) {
-      return state.tabs[state.focusedIndex].data;
-    }
-    return null;
-  }
-
-  int findOpenTabIndex(String path) {
-    for (int i = 0; i < state.tabs.length; i++) {
-      if (state.tabs[i].data.path == path) {
-        return i;
-      }
-    }
-    return -1;
-  }
-}
-
-class UIState {
-  final bool openTerminal;
-
-  const UIState({this.openTerminal = false});
-
-  UIState copyWith({bool? openTerminal}) {
-    return UIState(openTerminal: openTerminal ?? this.openTerminal);
-  }
-}
-
-class UINotifier extends Notifier<UIState> {
-  @override
-  UIState build() {
-    // TODO: implement build
-    throw UnimplementedError();
-  }
-
-  void toggleTerminal() {
-    state = state.copyWith(openTerminal: !state.openTerminal);
-  }
-
-  void setTerminal(bool open) {
-    state = state.copyWith(openTerminal: open);
-  }
-}
+//   void onTextChanged() {
+//     // TODO: implement onTextChanged
+//   }
+// }
 
 // 1. Adopt Riverpod for state management
 // 2. Separate business logic from UI
