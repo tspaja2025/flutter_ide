@@ -5,7 +5,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:riverpod_annotation/riverpod_annotation.dart';
 import 'package:shadcn_flutter/shadcn_flutter.dart';
 
-// part "main.g.dart";
+part "main.g.dart";
 
 void main() async {
   runApp(const ProviderScope(child: FlutterIDE()));
@@ -24,193 +24,118 @@ class FlutterIDE extends StatelessWidget {
   }
 }
 
-class EditorScreen extends StatefulWidget {
+class EditorScreen extends ConsumerStatefulWidget {
   const EditorScreen({super.key});
 
   @override
-  State<StatefulWidget> createState() => _EditorScreenState();
+  ConsumerState<EditorScreen> createState() => _EditorScreenState();
 }
 
-class _EditorScreenState extends State<EditorScreen> {
-  bool openTerminal = false;
-  late List<TabPaneData<EditorTab>> tabs;
-  int focused = 0;
+class _EditorScreenState extends ConsumerState<EditorScreen> {
+  final GlobalKey<EditorWindowState> _editorKey =
+      GlobalKey<EditorWindowState>();
 
-  final GlobalKey<_EditorWindowState> _editorKey =
-      GlobalKey<_EditorWindowState>();
-
-  List<TreeNode<FileSystemNode>> treeItems = [];
-  bool isLoading = true;
-  String? error;
+  @override
+  void initState() {
+    super.initState();
+    // Auto-load project from command line args or saved state if needed
+  }
 
   Future<Directory?> _pickProjectDirectory() async {
     final result = await FilePicker.getDirectoryPath();
-
     if (result == null) return null;
-
     return Directory(result);
   }
 
   Future<void> _loadProject() async {
-    setState(() {
-      isLoading = true;
-      error = null;
-    });
+    final isLoadingNotifier = ref.read(isLoadingProvider.notifier);
+    final errorNotifier = ref.read(errorMessageProvider.notifier);
+
+    isLoadingNotifier.setLoading(true);
+    errorNotifier.setError(null);
 
     try {
       final projectDir = await _pickProjectDirectory();
-
       if (projectDir == null) {
         throw Exception("No directory selected");
       }
 
-      final rootNode = FileSystemNode(
-        name: projectDir.path.split(Platform.pathSeparator).last,
-        path: projectDir.path,
-        isDirectory: true,
-      );
+      // Update project directory provider
+      ref.read(projectDirectoryProvider.notifier).setDirectory(projectDir);
 
-      rootNode.children = await _loadDirectoryChildren(projectDir);
-      rootNode.isLoaded = true;
+      // Load file tree
+      await ref.read(fileTreeProvider.notifier).loadFileTree(projectDir);
 
-      setState(() {
-        treeItems = [_convertToTreeNode(rootNode)];
-        isLoading = false;
-      });
+      isLoadingNotifier.setLoading(false);
     } catch (e) {
-      setState(() {
-        error = e.toString();
-        isLoading = false;
-      });
+      isLoadingNotifier.setLoading(false);
+      errorNotifier.setError(e.toString());
     }
   }
 
-  Future<List<FileSystemNode>> _loadDirectoryChildren(
-    Directory directory,
-  ) async {
-    final List<FileSystemNode> nodes = [];
-
+  Future<void> _openFile(String path) async {
     try {
-      final entities = await directory.list().toList();
+      final content = await _readFileContent(path);
+      final fileName = path.split(Platform.pathSeparator).last;
 
-      for (var entity in entities) {
-        // Skip hidden files/directories
-        final name = entity.path.split(Platform.pathSeparator).last;
-        if (name.startsWith(".")) continue;
+      final tab = EditorTab(title: fileName, path: path, content: content);
 
-        nodes.add(
-          FileSystemNode(
-            name: name,
-            path: entity.path,
-            isDirectory: entity is Directory,
+      ref.read(editorTabsProvider.notifier).addTab(tab);
+    } catch (e) {
+      if (mounted) {
+        showDialog(
+          context: context,
+          builder: (context) => AlertDialog(
+            title: const Text("Error"),
+            content: Text("Failed to open file: $e"),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(context),
+                child: const Text("OK"),
+              ),
+            ],
           ),
         );
       }
+    }
+  }
 
-      // Sort: directories first, then files
-      nodes.sort((a, b) {
-        if (a.isDirectory && !b.isDirectory) return -1;
-        if (!a.isDirectory && b.isDirectory) return 1;
-        return a.name.compareTo(b.name);
-      });
-
-      return nodes;
+  Future<String> _readFileContent(String filePath) async {
+    try {
+      final file = File(filePath);
+      if (await file.exists()) {
+        return await file.readAsString();
+      }
+      throw Exception("File does not exist");
     } catch (e) {
       if (kDebugMode) {
-        debugPrint("Error loading directory ${directory.path}: $e");
+        debugPrint("Error reading file $filePath: $e");
       }
-      return [];
+      return "Error reading file: $e";
     }
   }
 
   Future<void> _expandNode(FileSystemNode node) async {
-    if (!node.isDirectory || node.isLoaded) return;
-
-    try {
-      final directory = Directory(node.path);
-
-      if (await directory.exists()) {
-        final children = await _loadDirectoryChildren(directory);
-
-        setState(() {
-          node.children = children;
-          node.isLoaded = true;
-
-          treeItems = [_convertToTreeNode(_getNodeValue(treeItems.first))];
-        });
-      }
-    } catch (e) {
-      node.isLoaded = true;
-      node.children = [];
-
-      setState(() {
-        treeItems = [_convertToTreeNode(_getNodeValue(treeItems.first))];
-      });
-    }
+    await ref.read(fileTreeProvider.notifier).expandNode(node);
+    setState(() {}); // Trigger rebuild for tree view
   }
 
-  TreeNode<FileSystemNode>? _findNode(
-    List<TreeNode<FileSystemNode>> nodes,
-    String path,
+  List<TreeNode<FileSystemNode>> _convertToTreeNode(
+    List<FileSystemNode> nodes,
   ) {
-    for (final node in nodes) {
-      final value = _getNodeValue(node);
-      if (value.path == path) return node;
+    return nodes.map((node) {
+      List<TreeNode<FileSystemNode>> childNodes = [];
 
-      // The left operand can't be null, so the right operand is never executed.
-      final found = _findNode(node.children ?? [], path);
-      if (found != null) return found;
-    }
-    return null;
-  }
-
-  TreeNode<FileSystemNode> _convertToTreeNode(FileSystemNode node) {
-    final existing = _findNode(treeItems, node.path);
-
-    List<TreeNode<FileSystemNode>> childNodes = [];
-
-    if (node.isLoaded && node.children != null) {
-      childNodes = node.children!
-          .map((child) => _convertToTreeNode(child))
-          .toList();
-    } else if (node.isDirectory && !node.isLoaded) {
-      final placeholderNode = FileSystemNode(
-        name: "Loading...",
-        path: node.path,
-        isDirectory: false,
-      );
-
-      childNodes = [
-        TreeItem(data: placeholderNode, expanded: false, children: []),
-      ];
-    }
-
-    return TreeItem(
-      data: node,
-      expanded: existing?.expanded ?? false,
-      children: childNodes,
-    );
-  }
-
-  FileSystemNode _getNodeValue(TreeNode<FileSystemNode> node) {
-    // Try different possible property names
-    try {
-      // Try 'value' first (most common)
-      return (node as dynamic).value as FileSystemNode;
-    } catch (e) {
-      try {
-        // Try 'data' next
-        return (node as dynamic).data as FileSystemNode;
-      } catch (e) {
-        try {
-          // Try 'item'
-          return (node as dynamic).item as FileSystemNode;
-        } catch (e) {
-          // Try 'content'
-          return (node as dynamic).content as FileSystemNode;
-        }
+      if (node.isLoaded && node.children != null) {
+        childNodes = _convertToTreeNode(node.children!);
       }
-    }
+
+      return TreeItem<FileSystemNode>(
+        data: node,
+        expanded: node.isLoaded,
+        children: childNodes,
+      );
+    }).toList();
   }
 
   Icon _getFileIcon(String fileName) {
@@ -239,81 +164,16 @@ class _EditorScreenState extends State<EditorScreen> {
     }
   }
 
-  Future<String> _readFileContent(String filePath) async {
-    try {
-      final file = File(filePath);
-      if (await file.exists()) {
-        return await file.readAsString();
-      } else {
-        throw Exception("File does not exist");
-      }
-    } catch (e) {
-      if (kDebugMode) {
-        debugPrint("Error reading file $filePath: $e");
-      }
-      return "Error reading file: $e";
-    }
-  }
-
-  Future<void> _openFile(String path) async {
-    try {
-      // Check if file is already open
-      final existingTabIndex = _findOpenTabIndex(path);
-
-      if (existingTabIndex != -1) {
-        //Focus the existing tab
-        _editorKey.currentState?.focusTab(existingTabIndex);
-        return;
-      }
-
-      // Read file content
-      final content = await _readFileContent(path);
-      final fileName = path.split(Platform.pathSeparator).last;
-
-      // Add new tab
-      _editorKey.currentState?.addTab(
-        EditorTab(title: fileName, path: path, content: content),
-      );
-    } catch (e) {
-      if (kDebugMode) {
-        debugPrint("Opening file: $path: $e");
-      }
-      // Error dialog
-      if (mounted) {
-        showDialog(
-          context: context,
-          builder: (context) => AlertDialog(
-            title: const Text("Error"),
-            content: Text("Failed to open file: $e"),
-            actions: [
-              TextButton(
-                onPressed: () => Navigator.pop(context),
-                child: const Text("OK"),
-              ),
-            ],
-          ),
-        );
-      }
-    }
-  }
-
-  int _findOpenTabIndex(String path) {
-    final editorState = _editorKey.currentState;
-    if (editorState == null) return -1;
-
-    for (int i = 0; i < editorState.tabs.length; i++) {
-      if (editorState.tabs[i].data.path == path) {
-        return i;
-      }
-    }
-    return -1;
-  }
-
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final isLoading = ref.watch(isLoadingProvider);
+    final error = ref.watch(errorMessageProvider);
+    final projectDir = ref.watch(projectDirectoryProvider);
+    final fileTree = ref.watch(fileTreeProvider);
+    final terminalVisible = ref.watch(terminalVisibilityProvider);
 
-    if (isLoading) {
+    if (!isLoading && projectDir == null) {
       return Scaffold(
         child: Center(
           child: Column(
@@ -327,6 +187,21 @@ class _EditorScreenState extends State<EditorScreen> {
                 onPressed: _loadProject,
                 child: const Text("Open Project Folder"),
               ),
+            ],
+          ),
+        ),
+      );
+    }
+
+    if (isLoading) {
+      return const Scaffold(
+        child: Center(
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              CircularProgressIndicator(),
+              SizedBox(height: 16),
+              Text("Loading project..."),
             ],
           ),
         ),
@@ -352,6 +227,8 @@ class _EditorScreenState extends State<EditorScreen> {
         ),
       );
     }
+
+    final treeNodes = _convertToTreeNode(fileTree);
 
     return Scaffold(
       headers: [
@@ -407,7 +284,6 @@ class _EditorScreenState extends State<EditorScreen> {
                                 }
                               }
                               if (resultItems.isNotEmpty) {
-                                // Simulate latency to showcase incremental results.
                                 await Future.delayed(
                                   const Duration(seconds: 1),
                                 );
@@ -425,7 +301,9 @@ class _EditorScreenState extends State<EditorScreen> {
                     );
                   },
                   size: ButtonSize.small,
-                  child: const Text("Project Name"),
+                  child: Text(
+                    projectDir?.path.split('/').last ?? "Project Name",
+                  ),
                 ),
               ),
               Builder(
@@ -468,9 +346,7 @@ class _EditorScreenState extends State<EditorScreen> {
               tooltip: TooltipContainer(child: Text("Terminal")).call,
               child: IconButton.ghost(
                 onPressed: () {
-                  setState(() {
-                    openTerminal = !openTerminal;
-                  });
+                  ref.read(terminalVisibilityProvider.notifier).toggle();
                 },
                 shape: ButtonShape.circle,
                 size: ButtonSize.xSmall,
@@ -492,21 +368,17 @@ class _EditorScreenState extends State<EditorScreen> {
                     expandIcon: true,
                     shrinkWrap: true,
                     recursiveSelection: false,
-                    nodes: treeItems,
+                    nodes: treeNodes,
                     branchLine: BranchLine.path,
                     onSelectionChanged: TreeView.defaultSelectionHandler(
-                      treeItems,
+                      treeNodes,
                       (value) {
-                        setState(() {
-                          treeItems = value;
-                        });
+                        setState(() {});
                       },
                     ),
                     builder: (context, node) {
-                      final fileNode = _getNodeValue(node);
+                      final fileNode = node.data;
                       final isDirectory = fileNode.isDirectory;
-
-                      // Don't show expand icon for placeholder nodes
                       final isPlaceholder = fileNode.name == "Loading...";
                       final shouldShowExpandIcon =
                           isDirectory && !isPlaceholder;
@@ -533,16 +405,8 @@ class _EditorScreenState extends State<EditorScreen> {
                                 if (expanded && !fileNode.isLoaded) {
                                   await _expandNode(fileNode);
                                 }
-                                // Call default handler to update UI
-                                TreeView.defaultItemExpandHandler(
-                                  treeItems,
-                                  node,
-                                  (value) {
-                                    setState(() {
-                                      treeItems = value;
-                                    });
-                                  },
-                                )(expanded);
+                                // Trigger rebuild to update expansion state
+                                setState(() {});
                               }
                             : null,
                         child: Text(fileNode.name),
@@ -560,7 +424,7 @@ class _EditorScreenState extends State<EditorScreen> {
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
                 Expanded(child: EditorWindow(key: _editorKey)),
-                if (openTerminal)
+                if (terminalVisible)
                   Container(
                     decoration: BoxDecoration(
                       border: Border(
@@ -568,7 +432,7 @@ class _EditorScreenState extends State<EditorScreen> {
                       ),
                     ),
                     height: 150,
-                    child: Column(children: [const Text("Terminal")]),
+                    child: const Column(children: [Text("Terminal")]),
                   ),
               ],
             ),
@@ -579,69 +443,65 @@ class _EditorScreenState extends State<EditorScreen> {
   }
 }
 
-class EditorWindow extends StatefulWidget {
+class EditorWindow extends ConsumerStatefulWidget {
   const EditorWindow({super.key});
 
   @override
-  State<EditorWindow> createState() => _EditorWindowState();
+  ConsumerState<EditorWindow> createState() => EditorWindowState();
 }
 
-class _EditorWindowState extends State<EditorWindow> {
-  late List<TabPaneData<EditorTab>> tabs;
-  int focused = 0;
+class EditorWindowState extends ConsumerState<EditorWindow> {
   final TextEditingController _textController = TextEditingController();
+  bool _isUpdatingFromProvider = false;
 
-  void addTab(EditorTab tab) {
-    setState(() {
-      // Replace welcome tab if it's the only one
-      if (tabs.length == 1 && tabs.first.data.path == "__welcome__") {
-        tabs[0] = TabPaneData(tab);
-        focused = 0;
-      } else {
-        tabs.add(TabPaneData(tab));
-        focused = tabs.length - 1;
+  @override
+  void initState() {
+    super.initState();
+    _textController.addListener(_onTextChanged);
+
+    // Initialize with first tab content
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      final tabs = ref.read(editorTabsProvider);
+      if (tabs.isNotEmpty) {
+        _textController.text =
+            tabs[ref.read(focusedTabIndexProvider)].data.content;
       }
-
-      _textController.text = tab.content;
     });
   }
 
-  void focusTab(int index) {
-    setState(() {
-      focused = index;
-      if (index < tabs.length) {
-        _textController.text = tabs[index].data.content;
-      }
-    });
+  @override
+  void dispose() {
+    _textController.dispose();
+    super.dispose();
+  }
+
+  void _onTextChanged() {
+    if (_isUpdatingFromProvider) return;
+
+    final focusedIndex = ref.read(focusedTabIndexProvider);
+    final newContent = _textController.text;
+
+    ref
+        .read(editorTabsProvider.notifier)
+        .updateTabContent(focusedIndex, newContent);
   }
 
   Future<void> _saveCurrentFile() async {
-    if (focused >= tabs.length) return;
+    final focusedIndex = ref.read(focusedTabIndexProvider);
+    final tabs = ref.read(editorTabsProvider);
 
-    final currentTab = tabs[focused];
-    final filePath = currentTab.data.path;
-    final newContent = _textController.text;
-
-    if (currentTab.data.path == "__welcome__") return;
+    if (focusedIndex >= tabs.length) return;
+    if (tabs[focusedIndex].data.path == "__welcome__") return;
 
     try {
-      final file = File(filePath);
-      await file.writeAsString(newContent);
+      await ref.read(editorTabsProvider.notifier).saveTab(focusedIndex);
 
-      // Update tab content and reset modified flag
-      setState(() {
-        tabs[focused] = TabPaneData(
-          currentTab.data.copyWith(content: newContent, isModified: false),
-        );
-      });
-
-      // Show success indicator
       if (mounted) {
         showToast(
           context: context,
           location: ToastLocation.bottomRight,
           builder: (context, overlay) {
-            return SurfaceCard(child: Basic(title: Text("File Saved")));
+            return const SurfaceCard(child: Basic(title: Text("File Saved")));
           },
         );
       }
@@ -653,7 +513,7 @@ class _EditorWindowState extends State<EditorWindow> {
           builder: (context, overlay) {
             return SurfaceCard(
               child: Basic(
-                title: Text("Error saving file"),
+                title: const Text("Error saving file"),
                 subtitle: Text("$e"),
               ),
             );
@@ -663,48 +523,23 @@ class _EditorWindowState extends State<EditorWindow> {
     }
   }
 
-  void _onTextChanged() {
-    if (focused >= tabs.length) return;
-
-    final currentContent = tabs[focused].data.content;
-    final newContent = _textController.text;
-
-    if (currentContent != newContent) {
-      setState(() {
-        tabs[focused] = TabPaneData(
-          tabs[focused].data.copyWith(content: newContent, isModified: true),
-        );
-      });
-    }
-  }
-
-  @override
-  void initState() {
-    super.initState();
-
-    tabs = [
-      TabPaneData(
-        EditorTab(
-          title: "Welcome",
-          path: "__welcome__",
-          content: "Welcome to Flutter IDE\n\nOpen a folder to get started.",
-        ),
-      ),
-    ];
-
-    _textController.text = tabs.first.data.content;
-
-    _textController.addListener(_onTextChanged);
-  }
-
-  @override
-  void dispose() {
-    _textController.dispose();
-    super.dispose();
-  }
-
   @override
   Widget build(BuildContext context) {
+    final tabs = ref.watch(editorTabsProvider);
+    final focusedIndex = ref.watch(focusedTabIndexProvider);
+
+    // Update text controller when focused tab changes
+    if (focusedIndex < tabs.length) {
+      final currentContent = _textController.text;
+      final tabContent = tabs[focusedIndex].data.content;
+
+      if (currentContent != tabContent && !_isUpdatingFromProvider) {
+        _isUpdatingFromProvider = true;
+        _textController.text = tabContent;
+        _isUpdatingFromProvider = false;
+      }
+    }
+
     return Column(
       children: [
         Expanded(
@@ -725,16 +560,7 @@ class _EditorWindowState extends State<EditorWindow> {
                       size: ButtonSize.xSmall,
                       icon: const Icon(LucideIcons.x),
                       onPressed: () {
-                        setState(() {
-                          tabs.removeAt(index);
-                          if (focused >= tabs.length && tabs.isNotEmpty) {
-                            focused = tabs.length - 1;
-                          } else if (tabs.isEmpty) {
-                            _textController.clear();
-                          } else {
-                            _textController.text = tabs[focused].data.content;
-                          }
-                        });
+                        ref.read(editorTabsProvider.notifier).removeTab(index);
                       },
                     ),
                     child: Text(data.title),
@@ -742,19 +568,16 @@ class _EditorWindowState extends State<EditorWindow> {
                 ),
               );
             },
-            focused: focused,
+            focused: focusedIndex,
             onFocused: (value) {
-              setState(() {
-                focused = value;
-                if (value < tabs.length) {
-                  _textController.text = tabs[value].data.content;
-                }
-              });
+              ref.read(focusedTabIndexProvider.notifier).setIndex(value);
             },
             onSort: (value) {
-              setState(() {
-                tabs = value;
-              });
+              // Handle tab reordering if needed
+              // You might want to add this to your provider
+              // setState(() {
+              //   tabs = value;
+              // });
             },
             trailing: [
               IconButton.ghost(
@@ -767,7 +590,7 @@ class _EditorWindowState extends State<EditorWindow> {
             child: tabs.isEmpty
                 ? const Center(
                     child: Text(
-                      "No Files open. Select a file from the explorer",
+                      "No files open. Select a file from the explorer",
                     ),
                   )
                 : Column(
@@ -776,7 +599,8 @@ class _EditorWindowState extends State<EditorWindow> {
                       Expanded(
                         child: TextField(
                           controller: _textController,
-                          readOnly: tabs[focused].data.path == "__welcome__",
+                          readOnly:
+                              tabs[focusedIndex].data.path == "__welcome__",
                           expands: true,
                           minLines: null,
                           maxLines: null,
@@ -835,117 +659,248 @@ class FileSystemNode {
   });
 }
 
-// class Editor {
-//   final String projectName;
-//   final String projectPath;
-//   final String projectContent;
-//   final bool isDirectory;
-//   final bool isModified;
-//   final bool isLoaded;
-//   final bool isLoading;
-//   List<FileSystemNode>? children;
+@riverpod
+class ProjectDirectory extends _$ProjectDirectory {
+  @override
+  Directory? build() => null;
 
-//   Editor({
-//     required this.projectName,
-//     required this.projectPath,
-//     required this.projectContent,
-//     required this.isDirectory,
-//     required this.isModified,
-//     required this.isLoaded,
-//     required this.isLoading,
-//   });
+  void setDirectory(Directory directory) {
+    state = directory;
+  }
 
-//   Editor copyWith({
-//     String? projectName,
-//     String? projectPath,
-//     String? projectContent,
-//     bool? isDirectory,
-//     bool? isModified,
-//     bool? isLoaded,
-//     bool? isLoading,
-//   }) {
-//     return Editor(
-//       projectName: projectName ?? this.projectName,
-//       projectPath: projectPath ?? this.projectPath,
-//       projectContent: projectContent ?? this.projectContent,
-//       isDirectory: isDirectory ?? this.isDirectory,
-//       isModified: isModified ?? this.isModified,
-//       isLoaded: isLoaded ?? this.isLoaded,
-//       isLoading: isLoading ?? this.isLoading,
-//     );
-//   }
-// }
+  void clear() {
+    state = null;
+  }
+}
 
-// @riverpod
-// class EditorManager extends _$EditorManager {
-//   @override
-//   Editor build() {
-//     // TODO: implement build
-//     throw UnimplementedError();
-//   }
+@riverpod
+class FileTree extends _$FileTree {
+  @override
+  List<FileSystemNode> build() {
+    final projectDir = ref.watch(projectDirectoryProvider);
+    if (projectDir != null) {
+      loadFileTree(projectDir);
+    }
+    return [];
+  }
 
-//   Future<Directory?> pickProjectDirectory() async {
-//     // TODO: implement pickProjectDirectory
-//   }
+  Future<void> loadFileTree(Directory directory) async {
+    final rootNode = FileSystemNode(
+      name: directory.path.split(Platform.pathSeparator).last,
+      path: directory.path,
+      isDirectory: true,
+    );
 
-//   Future<void> loadProject() async {
-//     // TODO: implement loadProject
-//   }
+    rootNode.children = await loadDirectoryChildren(directory);
+    rootNode.isLoaded = true;
 
-//   Future<List<Editor>> loadDirectoryChildren(Directory directory) async {
-//     // TODO: implement loadDirectoryChildren
-//   }
+    state = [rootNode];
+  }
 
-//   Future<void> expandNode(Editor node) async {
-//     // TODO: implement expandNode
-//   }
+  Future<List<FileSystemNode>> loadDirectoryChildren(
+    Directory directory,
+  ) async {
+    final List<FileSystemNode> nodes = [];
 
-//   Future<String> readFileContent(String filePath) async {
-//     // TODO: implement readFileContent
-//   }
+    try {
+      final entities = await directory.list().toList();
 
-//   Future<void> openFile(String path) async {
-//     // TODO: implement openFile
-//   }
+      for (var entity in entities) {
+        final name = entity.path.split(Platform.pathSeparator).last;
+        if (name.startsWith(".")) continue;
 
-//   Future<void> saveCurrentFile() async {
-//     // TODO: implement saveCurrentFile
-//   }
+        nodes.add(
+          FileSystemNode(
+            name: name,
+            path: entity.path,
+            isDirectory: entity is Directory,
+          ),
+        );
+      }
 
-//   TreeNode<Editor>? findNode(List<TreeNode<Editor>> nodes, String path) {
-//     // TODO: implement findNode
-//   }
+      nodes.sort((a, b) {
+        if (a.isDirectory && !b.isDirectory) return -1;
+        if (!a.isDirectory && b.isDirectory) return 1;
+        return a.name.compareTo(b.name);
+      });
 
-//   TreeNode<Editor> convertToTreeNode(Editor node) {
-//     // TODO: implement convertToTreeNode
-//   }
+      return nodes;
+    } catch (e) {
+      return [];
+    }
+  }
 
-//   Editor getNodeValue(TreeNode<Editor> node) {
-//     // TODO: implement getNodeValue
-//   }
+  Future<void> expandNode(FileSystemNode node) async {
+    if (!node.isDirectory || node.isLoaded) return;
 
-//   Icon getFileIcon(String fileName) {
-//     // TODO: implement getFileIcon
-//   }
+    try {
+      final directory = Directory(node.path);
 
-//   int findOpenTabIndex(String path) {
-//     // TODO: implement findOpenTabIndex
-//   }
+      if (await directory.exists()) {
+        final children = await loadDirectoryChildren(directory);
 
-//   void addTab(EditorTab tab) {
-//     // TODO: implement addTab
-//   }
+        node.children = children;
+        node.isLoaded = true;
 
-//   void focusTab(int index) {
-//     // TODO: implement focusTab
-//   }
+        state = [...state];
+      }
+    } catch (e) {
+      node.isLoaded = true;
+      node.children = [];
+      state = [...state];
+    }
+  }
+}
 
-//   void onTextChanged() {
-//     // TODO: implement onTextChanged
-//   }
-// }
+@riverpod
+class EditorTabs extends _$EditorTabs {
+  @override
+  List<TabPaneData<EditorTab>> build() {
+    return [
+      TabPaneData(
+        EditorTab(
+          title: "Welcome",
+          path: "__welcome__",
+          content: "Welcome to Flutter IDE\n\nOpen a folder  to get started.",
+        ),
+      ),
+    ];
+  }
 
-// 1. Adopt Riverpod for state management
+  void addTab(EditorTab tab) {
+    // Replace welcome tab if it's the only one
+    if (state.length == 1 && state.first.data.path == "__welcome__") {
+      state = [TabPaneData(tab)];
+    } else {
+      // Check if tab already exists
+      final existingIndex = findTabIndex(tab.path);
+      if (existingIndex != -1) {
+        // Focus existing tab
+        ref.read(focusedTabIndexProvider.notifier).setIndex(existingIndex);
+        return;
+      }
+      state = [...state, TabPaneData(tab)];
+    }
+    // Focus the new tab
+    ref.read(focusedTabIndexProvider.notifier).setIndex(state.length - 1);
+  }
+
+  void updateTabContent(int index, String content) {
+    if (index >= state.length) return;
+
+    final currentTab = state[index];
+    final isModified = currentTab.data.content != content;
+
+    state = [
+      for (int i = 0; i < state.length; i++)
+        if (i == index)
+          TabPaneData(
+            currentTab.data.copyWith(content: content, isModified: isModified),
+          )
+        else
+          state[i],
+    ];
+  }
+
+  Future<void> saveTab(int index) async {
+    if (index >= state.length) return;
+
+    final tab = state[index];
+    if (tab.data.path == "__welcome__") return;
+
+    try {
+      final file = File(tab.data.path);
+      await file.writeAsString(tab.data.content);
+
+      // Mark as saved (not modified)
+      state = [
+        for (int i = 0; i < state.length; i++)
+          if (i == index)
+            TabPaneData(tab.data.copyWith(isModified: false))
+          else
+            state[i],
+      ];
+    } catch (e) {
+      rethrow;
+    }
+  }
+
+  void removeTab(int index) {
+    if (index >= state.length) return;
+
+    final newTabs = [...state];
+    newTabs.removeAt(index);
+
+    if (newTabs.isEmpty) {
+      state = [
+        TabPaneData(
+          EditorTab(
+            title: "Welcome",
+            path: "__welcome__",
+            content: "No files open. Select a file from the explorer.",
+          ),
+        ),
+      ];
+      ref.read(focusedTabIndexProvider.notifier).setIndex(0);
+    } else {
+      state = newTabs;
+      if (ref.read(focusedTabIndexProvider) >= state.length) {
+        ref.read(focusedTabIndexProvider.notifier).setIndex(state.length - 1);
+      }
+    }
+  }
+
+  int findTabIndex(String path) {
+    for (int i = 0; i < state.length; i++) {
+      if (state[i].data.path == path) {
+        return i;
+      }
+    }
+    return -1;
+  }
+}
+
+@riverpod
+class FocusedTabIndex extends _$FocusedTabIndex {
+  @override
+  int build() => 0;
+
+  void setIndex(int index) {
+    state = index;
+  }
+}
+
+@riverpod
+class TerminalVisibility extends _$TerminalVisibility {
+  @override
+  bool build() => false;
+
+  void toggle() {
+    state = !state;
+  }
+}
+
+@riverpod
+class IsLoading extends _$IsLoading {
+  @override
+  bool build() => false;
+
+  void setLoading(bool loading) {
+    state = loading;
+  }
+}
+
+@riverpod
+class ErrorMessage extends _$ErrorMessage {
+  @override
+  String? build() => null;
+
+  void setError(String? error) {
+    state = error;
+  }
+}
+
+// 1. Adopt Riverpod for state management - Done
 // 2. Separate business logic from UI
 // 3. Improved error handling
 // 4. Keyboard shortcuts
