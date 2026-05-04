@@ -1,5 +1,7 @@
 import 'dart:io';
 import 'package:file_picker/file_picker.dart';
+import 'package:flutter/services.dart';
+import 'package:flutter_ide/widgets/editor_textfield.dart';
 import 'package:path/path.dart' as path;
 import 'package:shadcn_flutter/shadcn_flutter.dart';
 
@@ -74,11 +76,9 @@ class _EditorTreeViewState extends State<EditorTreeView> {
     return (node.children ?? []).map((child) {
       return TreeItem<FileSystemNode>(
         data: child,
-        expanded: false,
-        children: child.isDirectory
-            ? (child.isLoaded
-                  ? convertToTreeNodes(child)
-                  : [TreeItem(data: child)])
+        expanded: child.isExpanded,
+        children: child.isDirectory && child.isLoaded
+            ? convertToTreeNodes(child)
             : [],
       );
     }).toList();
@@ -143,13 +143,6 @@ class _EditorTreeViewState extends State<EditorTreeView> {
       for (var entity in entities) {
         // Skip hidden files and common build directories
         final basename = path.basename(entity.path);
-        // if (basename.startsWith('.') ||
-        //             basename == 'node_modules' ||
-        //             basename == 'build' ||
-        //             basename == 'dist' ||
-        //             basename == '.dart_tool') {
-        //           continue;
-        //         }
 
         final childNode = FileSystemNode(
           name: basename,
@@ -171,10 +164,11 @@ class _EditorTreeViewState extends State<EditorTreeView> {
   // Load children on demand when expanding a node
   Future<void> expandNode(String nodePath) async {
     final node = _findNodeByPath(rootNode!, nodePath);
+
     if (node != null && node.isDirectory && !node.isLoaded) {
       await _loadDirectoryContents(node);
 
-      // Update tree structure
+      // Rebuild the entire tree structure
       setState(() {
         treeItems = [
           TreeItem(
@@ -206,20 +200,21 @@ class _EditorTreeViewState extends State<EditorTreeView> {
     if (selectedDirectory != null) {
       currentPath = selectedDirectory;
       await loadDirectory(selectedDirectory);
-
-      if (mounted) {
-        showToast(
-          context: context,
-          builder: (context, overlay) => SurfaceCard(
-            child: Basic(title: Text("Opened: $selectedDirectory")),
-          ),
-        );
-      }
     }
   }
 
   Icon _getFileIcon(String filename) {
-    final extension = path.extension(filename).toLowerCase();
+    final lower = filename.toLowerCase();
+
+    switch (lower) {
+      case ".gitignore":
+      case ".gitattributes":
+        return const Icon(LucideIcons.gitBranch, size: 16);
+      case "license":
+        return const Icon(LucideIcons.scale, size: 16);
+    }
+
+    final extension = path.extension(lower);
 
     switch (extension) {
       case ".bin":
@@ -228,8 +223,12 @@ class _EditorTreeViewState extends State<EditorTreeView> {
         return const Icon(BootstrapIcons.codeSlash, size: 16);
       case ".html":
         return const Icon(BootstrapIcons.filetypeHtml, size: 16);
+      case ".iml":
+        return const Icon(BootstrapIcons.codeSlash, size: 16);
       case ".json":
         return const Icon(BootstrapIcons.filetypeJson, size: 16);
+      case ".lock":
+        return const Icon(LucideIcons.lock, size: 16);
       case ".md":
         return const Icon(BootstrapIcons.filetypeMd, size: 16);
       case ".otf":
@@ -241,7 +240,7 @@ class _EditorTreeViewState extends State<EditorTreeView> {
       case ".yaml":
         return const Icon(BootstrapIcons.filetypeYml, size: 16);
       default:
-        return const Icon(BootstrapIcons.folder, size: 16);
+        return const Icon(BootstrapIcons.codeSlash, size: 16);
     }
   }
 
@@ -276,15 +275,26 @@ class _EditorTreeViewState extends State<EditorTreeView> {
             }),
             builder: (context, node) {
               final fileNode = node.data;
+              final isDirectory = fileNode.isDirectory;
+              final isPlaceholder = fileNode.name == "Loading...";
+              final shouldShowExpandIcon = isDirectory && !isPlaceholder;
 
               return TreeItemView(
                 onPressed: () async {
-                  if (!fileNode.isDirectory) {
+                  if (isDirectory && !fileNode.isLoaded && !isPlaceholder) {
+                    // Mark as expanded before loading to prevent flicker
+                    if (!node.expanded) {
+                      setState(() {
+                        fileNode.isExpanded = true;
+                      });
+                    }
+                    await expandNode(fileNode.path);
+                  } else if (!isDirectory && !isPlaceholder) {
                     final content = await File(fileNode.path).readAsString();
                     widget.onFileOpen(fileNode.path, content);
                   }
                 },
-                leading: fileNode.isDirectory
+                leading: isDirectory
                     ? Icon(
                         node.expanded
                             ? LucideIcons.folderOpen
@@ -292,13 +302,17 @@ class _EditorTreeViewState extends State<EditorTreeView> {
                       )
                     : _getFileIcon(fileNode.name),
                 // Expand/collapse handling; updates treeItems with new expanded state.
-                onExpand: TreeView.defaultItemExpandHandler(treeItems, node, (
-                  value,
-                ) {
-                  setState(() {
-                    treeItems = value;
-                  });
-                }),
+                onExpand: shouldShowExpandIcon
+                    ? (expanded) async {
+                        if (expanded && !fileNode.isLoaded) {
+                          await expandNode(fileNode.path);
+                        }
+
+                        setState(() {
+                          fileNode.isExpanded = expanded;
+                        });
+                      }
+                    : null,
                 child: Text(fileNode.name),
               );
             },
@@ -318,18 +332,34 @@ class _EditorTabViewState extends State<EditorTabView> {
   late List<TabPaneData<EditorTab>> tabs;
   int focused = 0;
 
+  // Store original content for each tab to detect modifications
+  final Map<String, String> _originalContent = {};
+
   @override
   void initState() {
     super.initState();
     _textController.addListener(() {
       if (tabs.isEmpty) return;
 
-      tabs[focused] = TabPaneData(
-        tabs[focused].data.copyWith(
-          content: _textController.text,
-          isModified: true,
-        ),
-      );
+      if (focused >= 0 && focused < tabs.length) {
+        final currentTab = tabs[focused].data;
+        final currentContent = _textController.text;
+        final originalContent =
+            _originalContent[currentTab.path] ?? currentTab.content;
+
+        // Mark as modified if content change
+        final isModified = currentContent != originalContent;
+
+        tabs[focused] = TabPaneData(
+          tabs[focused].data.copyWith(
+            content: _textController.text,
+            isModified: isModified,
+          ),
+        );
+
+        // Force rebuild to update tab indicators
+        setState(() {});
+      }
     });
     // Build the initial set of tabs. TabPaneData wraps your custom data type
     tabs = [
@@ -357,7 +387,9 @@ class _EditorTabViewState extends State<EditorTabView> {
     if (existingIndex != -1) {
       setState(() {
         focused = existingIndex;
-        _textController.text = tabs[existingIndex].data.content;
+        final tab = tabs[existingIndex].data;
+        _textController.text = tab.content;
+        _originalContent[filePath] = tab.content;
       });
     } else {
       setState(() {
@@ -370,13 +402,103 @@ class _EditorTabViewState extends State<EditorTabView> {
             ),
           ),
         );
+        _originalContent[filePath] = content;
         focused = tabs.length - 1;
         _textController.text = content;
       });
     }
   }
 
-  // Render a single tab header item. It shows a badge-like count and a close button.
+  void saveCurrentFile() async {
+    if (tabs.isEmpty || focused < 0 || focused >= tabs.length) return;
+
+    final currentTab = tabs[focused].data;
+    // Can't save welcome tab
+    if (currentTab.path == "__welcome__") return;
+
+    try {
+      final file = File(currentTab.path);
+      await file.writeAsString(_textController.text);
+
+      // Update original content after save
+      _originalContent[currentTab.path] = _textController.text;
+
+      setState(() {
+        tabs[focused] = TabPaneData(currentTab.copyWith(isModified: false));
+      });
+
+      if (mounted) {
+        showToast(
+          context: context,
+          builder: (context, overlay) => SurfaceCard(
+            child: Basic(title: Text("File saved ${currentTab.title}")),
+          ),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        showToast(
+          context: context,
+          builder: (context, overlay) =>
+              SurfaceCard(child: Basic(title: Text("Error saving file: $e"))),
+        );
+      }
+    }
+  }
+
+  void _closeTab(int index) {
+    final tab = tabs[index].data;
+
+    // Check if file has unsaved changes
+    if (tab.isModified) {
+      _showUnsavedChangesDialog(index, tab);
+    } else {
+      _performCloseTab(index);
+    }
+  }
+
+  void _showUnsavedChangesDialog(int index, EditorTab tab) {
+    // TODO: dialog
+    _performCloseTab(index);
+  }
+
+  void _performCloseTab(int index) {
+    setState(() {
+      final tabToClose = tabs[index].data;
+      _originalContent.remove(tabToClose.path);
+      tabs.removeAt(index);
+
+      // Handle focus after closing tab
+      if (tabs.isEmpty) {
+        tabs.add(
+          TabPaneData(
+            EditorTab(
+              title: "Welcome",
+              path: "__welcome__",
+              content:
+                  "Welcome to Flutter IDE\n\nOpen a folder to get started.",
+            ),
+          ),
+        );
+        _originalContent["__welcome__"] = tabs[0].data.content;
+        focused = 0;
+        _textController.text = tabs[0].data.content;
+      } else {
+        // Adjust focused index
+        if (focused >= tabs.length) {
+          focused = tabs.length - 1;
+        } else if (focused == index && index > 0) {
+          focused = index - 1;
+        }
+        // Ensure focused is within bounds
+        if (focused >= 0 && focused < tabs.length) {
+          final newTab = tabs[focused].data;
+          _textController.text = newTab.content;
+        }
+      }
+    });
+  }
+
   TabItem _buildTabItem(int index) {
     EditorTab data = tabs[index].data;
     return TabItem(
@@ -397,14 +519,7 @@ class _EditorTabViewState extends State<EditorTabView> {
               shape: ButtonShape.circle,
               size: ButtonSize.xSmall,
               icon: const Icon(LucideIcons.x),
-              onPressed: () {
-                setState(() {
-                  tabs.removeAt(index);
-                  if (focused >= tabs.length) {
-                    focused = tabs.length - 1;
-                  }
-                });
-              },
+              onPressed: () => _closeTab(index),
             ),
           ),
           child: Text(data.title),
@@ -415,9 +530,17 @@ class _EditorTabViewState extends State<EditorTabView> {
 
   @override
   Widget build(BuildContext context) {
+    // Ensure focused index is valid
+    if (tabs.isNotEmpty && focused >= 0 && focused < tabs.length) {
+      // Ensure the text controller has the correct content for the focused tab
+      final currentContent = _textController.text;
+      final tabContent = tabs[focused].data.content;
+      if (currentContent != tabContent) {
+        _textController.text = tabContent;
+      }
+    }
+
     return TabPane<EditorTab>(
-      // children: tabs.map((e) => _buildTabItem(e)).toList(),
-      // Provide the items and how to render each tab header.
       items: tabs,
       itemBuilder: (context, item, index) {
         return _buildTabItem(index);
@@ -426,17 +549,27 @@ class _EditorTabViewState extends State<EditorTabView> {
       focused: focused,
       onFocused: (value) {
         setState(() {
-          focused = value;
-          _textController.text = tabs[value].data.content;
+          if (value >= 0 && value < tabs.length) {
+            focused = value;
+            _textController.text = tabs[value].data.content;
+          }
         });
       },
-      // Allow reordering via drag-and-drop; update the list with the new order.
       onSort: (value) {
         setState(() {
           tabs = value;
         });
       },
       trailing: [
+        Tooltip(
+          tooltip: TooltipContainer(child: const Text("Save")).call,
+          child: IconButton.ghost(
+            onPressed: saveCurrentFile,
+            size: ButtonSize.small,
+            density: ButtonDensity.iconDense,
+            icon: const Icon(LucideIcons.save),
+          ),
+        ),
         Tooltip(
           tooltip: TooltipContainer(child: const Text("New...")).call,
           child: IconButton.ghost(
@@ -455,27 +588,60 @@ class _EditorTabViewState extends State<EditorTabView> {
                     ),
                   ),
                 );
+                focused = tabs.length - 1;
+                _textController.text = "";
               });
             },
           ),
         ),
       ],
-      // The content area; you can render based on the focused index.
-      child: SizedBox(
-        height: MediaQuery.of(context).size.height,
-        // child: EditorTextField(
-        //   controller: _textController,
-        //   readOnly: tabs[focused].data.path == "__welcome__",
-        // ),
-        child: TextField(
-          controller: _textController,
-          readOnly: tabs[focused].data.path == "__welcome__",
-          expands: true,
-          minLines: null,
-          maxLines: null,
-          padding: const EdgeInsets.all(16),
-        ),
-      ),
+      child: tabs.isEmpty
+          ? SizedBox(
+              height: MediaQuery.of(context).size.height,
+              child: const Center(
+                child: Text(
+                  "No tabs open. Create a new file or open a project.",
+                ),
+              ),
+            )
+          : SizedBox(
+              height: MediaQuery.of(context).size.height,
+              child: ContextMenu(
+                items: [
+                  const MenuButton(
+                    trailing: MenuShortcut(
+                      activator: SingleActivator(
+                        LogicalKeyboardKey.cut,
+                        control: true,
+                      ),
+                    ),
+                    child: Text("Cut"),
+                  ),
+                  const MenuButton(
+                    trailing: MenuShortcut(
+                      activator: SingleActivator(
+                        LogicalKeyboardKey.copy,
+                        control: true,
+                      ),
+                    ),
+                    child: Text("Copy"),
+                  ),
+                  const MenuButton(
+                    trailing: MenuShortcut(
+                      activator: SingleActivator(
+                        LogicalKeyboardKey.paste,
+                        control: true,
+                      ),
+                    ),
+                    child: Text("Paste"),
+                  ),
+                ],
+                child: EditorTextField(
+                  controller: _textController,
+                  readOnly: tabs[focused].data.path == "__welcome__",
+                ),
+              ),
+            ),
     );
   }
 }
@@ -514,6 +680,7 @@ class FileSystemNode {
   final bool isDirectory;
   bool isLoaded = false;
   bool isLoading = false;
+  bool isExpanded = false;
   List<FileSystemNode>? children;
 
   FileSystemNode({
@@ -523,56 +690,6 @@ class FileSystemNode {
   });
 }
 
-class SyntaxHighlighter {
-  // TODO
-}
-
-class _Match {
-  // TODO
-}
-
-class DartSyntaxHighlighter {
-  // TODO
-}
-
-class EditorTextField extends StatefulWidget {
-  final TextEditingController controller;
-  final bool readOnly;
-  final SyntaxHighlighter? highlighter;
-  final EdgeInsets padding;
-
-  const EditorTextField({
-    super.key,
-    required this.controller,
-    this.readOnly = false,
-    this.highlighter,
-    this.padding = const EdgeInsets.all(16),
-  });
-
-  @override
-  State<EditorTextField> createState() => _EditorTextFieldState();
-}
-
-class _EditorTextFieldState extends State<EditorTextField> {
-  @override
-  Widget build(BuildContext context) {
-    // TODO: implement build
-    throw UnimplementedError();
-  }
-}
-
-// Problems:
-// 1. Closing all tabs throws error
 // TODO:
-// 1. Syntax highlighting
-// 2. file saving (CTRL+S)
-// 3. Context Menu
-// Advanced
-// 1. Brace Matching
-// 2. Auto-completion suggestions
-// 3. Performance optimizations
-// 3.1. Virtualization for large files
-// 3.2. Cache highlighted lines
-// 3.3. Only re-highlight visible lines
-// 3.4. Use compute for heavy processing
-// 4. Language detection
+// 1. Keyboard shortcuts for:
+// 1.1 Cut (CTRL-X) / Copy (CTRL-C) / Paste (CTRL-V) / Save (CTRL-S)
